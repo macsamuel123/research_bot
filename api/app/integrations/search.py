@@ -13,6 +13,10 @@ class SearchResult:
     content: str
 
 
+class SearchError(RuntimeError):
+    """The search provider failed. Messages never contain the API key."""
+
+
 @runtime_checkable
 class SearchClient(Protocol):
     async def search(self, query: str, max_results: int) -> list[SearchResult]: ...

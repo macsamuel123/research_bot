@@ -24,7 +24,8 @@ class TextDelta:
 class ToolUse:
     id: str
     name: str
-    input: dict[str, Any]
+    #: Raw model-provided input. Usually a dict, but the engine validates it (never trusts it).
+    input: object
 
 
 @dataclass(frozen=True)

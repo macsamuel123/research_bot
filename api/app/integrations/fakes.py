@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 
 from app.integrations.llm import (
@@ -29,14 +29,23 @@ class FakeTurn:
     #: If set, the stream waits on this event before emitting chunk `block_before_chunk`.
     block_on: asyncio.Event | None = None
     block_before_chunk: int = 0
+    #: If set, raised after the scripted chunks are emitted (no LLMResponse is yielded).
+    raise_after_chunks: Exception | None = None
 
 
 class FakeLLM:
     """Plays scripted turns in order (the last turn repeats) and records every request."""
 
-    def __init__(self, script: Sequence[FakeTurn] | None = None, chunk_delay_ms: int = 0) -> None:
+    def __init__(
+        self,
+        script: Sequence[FakeTurn] | None = None,
+        chunk_delay_ms: int = 0,
+        on_request: Callable[[LLMRequest], None] | None = None,
+    ) -> None:
         self.script: list[FakeTurn] = list(script) if script else [FakeTurn()]
         self.chunk_delay_ms = chunk_delay_ms
+        #: Called with each request before anything is streamed (e.g. to inspect the DB).
+        self.on_request = on_request
         self.requests: list[LLMRequest] = []
 
     def _next_turn(self) -> FakeTurn:
@@ -45,6 +54,8 @@ class FakeLLM:
 
     async def stream(self, request: LLMRequest) -> AsyncIterator[LLMEvent]:
         self.requests.append(request)
+        if self.on_request is not None:
+            self.on_request(request)
         turn = self._next_turn()
         for i, chunk in enumerate(turn.chunks):
             if turn.block_on is not None and i == turn.block_before_chunk:
@@ -52,6 +63,8 @@ class FakeLLM:
             if self.chunk_delay_ms:
                 await asyncio.sleep(self.chunk_delay_ms / 1000)
             yield TextDelta(text=chunk)
+        if turn.raise_after_chunks is not None:
+            raise turn.raise_after_chunks
         yield LLMResponse(
             text="".join(turn.chunks),
             tool_uses=list(turn.tool_uses),
