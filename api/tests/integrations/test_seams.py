@@ -120,3 +120,40 @@ def test_fake_search_and_notifier_record_calls() -> None:
     assert asyncio.run(go()) == 1
     assert search.call_count == 1 and search.calls == [("q", 5)]
     assert notifier.outbox == [alert]
+
+
+def test_fake_llm_on_request_hook_runs_before_streaming() -> None:
+    order: list[str] = []
+    llm = FakeLLM([FakeTurn(chunks=["a"])], on_request=lambda _r: order.append("hook"))
+
+    async def go() -> None:
+        async for event in llm.stream(LLMRequest(system="", messages=[], max_tokens=1)):
+            order.append(type(event).__name__)
+
+    asyncio.run(go())
+    assert order == ["hook", "TextDelta", "LLMResponse"]
+
+
+def test_fake_llm_raise_after_chunks() -> None:
+    llm = FakeLLM([FakeTurn(chunks=["p"], raise_after_chunks=RuntimeError("boom"))])
+    seen: list[str] = []
+
+    async def go() -> None:
+        async for event in llm.stream(LLMRequest(system="", messages=[], max_tokens=1)):
+            assert isinstance(event, TextDelta)
+            seen.append(event.text)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(go())
+    assert seen == ["p"]
+
+
+def test_fake_llm_accepts_non_dict_tool_input() -> None:
+    tool = ToolUse(id="t", name="save_finding", input="not a dict")
+    llm = FakeLLM([FakeTurn(tool_uses=[tool])])
+
+    async def go() -> list[TextDelta | LLMResponse]:
+        return [e async for e in llm.stream(LLMRequest(system="", messages=[], max_tokens=1))]
+
+    final = asyncio.run(go())[-1]
+    assert isinstance(final, LLMResponse) and final.tool_uses[0].input == "not a dict"

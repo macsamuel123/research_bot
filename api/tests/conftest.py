@@ -23,6 +23,8 @@ from app.config import (
 from app.main import create_app
 from app.testdb import ensure_database
 
+pytest_plugins = ["tests.helpers.engine"]
+
 # Distinctive dummy secrets so redaction/leak tests can search for them.
 DUMMY_SECRETS: dict[str, str] = {
     "ANTHROPIC_API_KEY": "sk-ant-dummy-AAAA1111",

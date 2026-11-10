@@ -1,5 +1,6 @@
-"""Test-only row factories. Findings and runs are seeded directly because the engine
-(services.findings.save_finding, services.runs.open_run) lands in M8."""
+"""Test-only row factories for router/read tests. They seed findings and runs directly to
+set up fixed states; app code inserts them only through services.findings.save_finding and
+services.runs.open_run (checked by tests/test_insert_paths.py)."""
 
 from __future__ import annotations
 
