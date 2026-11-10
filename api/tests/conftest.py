@@ -5,8 +5,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import Session
 
+from alembic import command
+from app.auth.session import COOKIE_NAME, make_token
+from app.clock import FakeClock
 from app.config import (
     NON_SETTINGS_ENV,
     Settings,
@@ -77,9 +83,57 @@ def settings(clean_env: pytest.MonkeyPatch, test_db_url: str) -> Settings:
     return load_settings()
 
 
+API_DIR = Path(__file__).resolve().parents[1]
+TABLES = ("finding", "run", "message", "research", "api_key")
+
+
+def alembic_config(url: str) -> Config:
+    cfg = Config(str(API_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(API_DIR / "alembic"))
+    cfg.attributes["database_url"] = url
+    return cfg
+
+
+@pytest.fixture(scope="session")
+def migrated_db(test_db_url: str) -> Iterator[Engine]:
+    """Migrations run once per session."""
+    command.upgrade(alembic_config(test_db_url), "head")
+    engine = create_engine(test_db_url)
+    yield engine
+    engine.dispose()
+
+
 @pytest.fixture
-def client(settings: Settings) -> Iterator[TestClient]:
-    with TestClient(create_app(settings)) as c:
+def db_engine(migrated_db: Engine) -> Engine:
+    """All tables are truncated before each test that touches the DB."""
+    with migrated_db.begin() as conn:
+        conn.execute(text(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE"))
+    return migrated_db
+
+
+@pytest.fixture
+def db(db_engine: Engine) -> Iterator[Session]:
+    with Session(db_engine, expire_on_commit=False) as session:
+        yield session
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture
+def client(settings: Settings, db_engine: Engine, clock: FakeClock) -> Iterator[TestClient]:
+    """Anonymous client (no session cookie)."""
+    with TestClient(create_app(settings, clock=clock)) as c:
+        yield c
+
+
+@pytest.fixture
+def owner_client(settings: Settings, db_engine: Engine, clock: FakeClock) -> Iterator[TestClient]:
+    """Client carrying a valid owner session cookie."""
+    with TestClient(create_app(settings, clock=clock)) as c:
+        c.cookies.set(COOKIE_NAME, make_token(settings.session_secret, clock.now(), 30))
         yield c
 
 

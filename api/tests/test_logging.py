@@ -98,3 +98,22 @@ def test_noisy_loggers_at_warning(loaded: Settings) -> None:
     assert set(NOISY_LOGGERS) == {"httpx", "httpcore", "telegram"}
     for name in NOISY_LOGGERS:
         assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+
+
+def test_uvicorn_access_records_stay_formattable_and_redacted() -> None:
+    from uvicorn.logging import AccessFormatter
+
+    flt = SecretRedactingFilter(["sekrit-token"])
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1", "GET", "/api/x?key=sekrit-token", "1.1", 401),
+        None,
+    )
+    assert flt.filter(record)
+    line = AccessFormatter("%(message)s", use_colors=False).format(record)
+    assert "sekrit-token" not in line
+    assert '"GET /api/x?key=*** HTTP/1.1" 401' in line

@@ -16,7 +16,8 @@ export ANTHROPIC_MODEL=claude-sonnet-5-5
 export TAVILY_API_KEY=e2e-dummy-tavily-key
 export TELEGRAM_BOT_TOKEN=e2e-dummy-telegram-token
 export OWNER_CHAT_ID=1
-export OWNER_PASSWORD_HASH=e2e-dummy-password-hash
+# Dummy test-only owner password; its argon2 hash is computed below (never a real secret).
+export E2E_OWNER_PASSWORD="${E2E_OWNER_PASSWORD:-e2e-owner-password}"
 export SESSION_SECRET=e2e-dummy-session-secret
 export PUBLIC_BASE_URL="http://127.0.0.1:${WEB_PORT}"
 export RUN_BUDGET_CENTS=50
@@ -60,6 +61,11 @@ wait_for() {
     sleep 1
   done
 }
+
+OWNER_PASSWORD_HASH="$(cd "$ROOT/api" && uv run python -c \
+  'import sys; from app.auth.password import hash_password; print(hash_password(sys.argv[1]))' \
+  "$E2E_OWNER_PASSWORD")"
+export OWNER_PASSWORD_HASH
 
 echo "e2e-stack: ensuring test database exists"
 (cd "$ROOT/api" && uv run python -m app.testdb "$DATABASE_URL")
