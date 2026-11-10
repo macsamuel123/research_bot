@@ -1,0 +1,6 @@
+# Dev/test overlay: publish postgres on loopback only.
+# Usage: docker compose -f compose.yaml -f compose.dev.yaml up -d postgres
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5433:5432"

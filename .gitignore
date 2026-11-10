@@ -1,0 +1,19 @@
+# env files (only the example is tracked)
+.env*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+
+# node / next
+node_modules/
+.next/
+web/test-results/
+web/playwright-report/
+*.tsbuildinfo
