@@ -27,6 +27,11 @@ class SecretRedactingFilter(logging.Filter):
         return text
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "uvicorn.access" and isinstance(record.args, tuple):
+            # uvicorn's AccessFormatter unpacks record.args, so keep them (redacted).
+            record.msg = self.redact(str(record.msg))
+            record.args = tuple(self.redact(a) if isinstance(a, str) else a for a in record.args)
+            return True
         try:
             message = record.getMessage()
         except Exception:  # noqa: BLE001 - a bad format string must not break logging
