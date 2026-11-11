@@ -79,6 +79,7 @@ test("delete opens a confirm dialog; cancel keeps, confirm deletes and goes home
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "What do you want to research?" })).toBeVisible();
   nav = await openSidebar(page);
-  await expect(nav.getByTestId("sidebar-item")).toHaveCount(2);
+  // Five fixtures (M9 adds the active-run and conflict threads), minus the deleted one.
+  await expect(nav.getByTestId("sidebar-item")).toHaveCount(4);
   await expect(sidebarItem(nav, TITLE)).toHaveCount(0);
 });

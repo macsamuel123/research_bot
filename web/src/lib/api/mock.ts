@@ -7,9 +7,33 @@ import {
   type ResearchDetail,
   type ResearchSummary,
   type Run,
+  type RunEvent,
+  type RunStreamHandlers,
   type Schedule,
   type WatchPatch,
 } from "./types";
+
+/** Same text as the backend's Conflict for a second send while a run is active (M9-C4). */
+export const RUN_IN_PROGRESS = "a run is already in progress";
+export const NO_PENDING_MESSAGE = "no pending user message";
+export const MESSAGE_MAX_CHARS = 2000;
+
+/** Fixture A: a chat run in progress that finishes after a few polls. */
+export const FIXTURE_ACTIVE_RUN_ID = 4;
+/** Fixture B: a watch run starts right after the thread is first opened, so a send gets 409. */
+export const FIXTURE_CONFLICT_ID = 5;
+
+/** The simulated assistant reply, streamed chunk by chunk. */
+export const MOCK_REPLY_CHUNKS = [
+  "Looking into this ",
+  "now. ",
+  "I searched recent sources ",
+  "and compared what they report. ",
+  "The most relevant result ",
+  "is saved in the Findings panel ",
+  "with its source link. ",
+  "Research complete.",
+] as const;
 
 /**
  * Deterministic in-memory implementation of ApiClient for NEXT_PUBLIC_USE_MOCKS=1.
@@ -42,6 +66,16 @@ interface StoredRun extends Run {
 
 interface StoredMessage extends Message {
   research_id: number;
+}
+
+/** A run that the mock settles after a number of (deduplicated) getResearch calls. */
+interface ScriptedRun {
+  researchId: number;
+  runId: number;
+  /** getResearch calls still answered with the run active. */
+  pollsLeft: number;
+  reply: string;
+  finding: Omit<StoredFinding, "id" | "research_id" | "found_at" | "dismissed">;
 }
 
 interface Store {
@@ -92,6 +126,30 @@ function fixtures(): Store {
       last_run_at: null,
       last_activity_at: T("2026-10-20T10:00:00Z"),
     },
+    {
+      id: FIXTURE_ACTIVE_RUN_ID,
+      title: "Quantum error correction milestones",
+      topic: "Which quantum error correction milestones were reached this year?",
+      created_at: T("2026-11-10T09:30:00Z"),
+      unread: false,
+      watch_enabled: false,
+      watch_enabled_at: null,
+      schedule: null,
+      last_run_at: T("2026-11-10T09:30:00Z"),
+      last_activity_at: T("2026-11-10T09:30:00Z"),
+    },
+    {
+      id: FIXTURE_CONFLICT_ID,
+      title: "Heat pump subsidies",
+      topic: "Which countries changed heat pump subsidies this quarter?",
+      created_at: T("2026-11-02T07:00:00Z"),
+      unread: false,
+      watch_enabled: true,
+      watch_enabled_at: T("2026-11-02T07:05:00Z"),
+      schedule: "6h",
+      last_run_at: T("2026-11-10T06:00:00Z"),
+      last_activity_at: T("2026-11-10T06:01:00Z"),
+    },
   ];
 
   const messages: StoredMessage[] = [
@@ -113,6 +171,15 @@ function fixtures(): Store {
       created_at: T("2026-11-09T18:01:00Z"),
     },
     { id: 5, research_id: 3, role: "user", content: researches[2]!.topic, created_at: T("2026-10-20T10:00:00Z") },
+    { id: 6, research_id: 4, role: "user", content: researches[3]!.topic, created_at: T("2026-11-10T09:30:00Z") },
+    { id: 7, research_id: 5, role: "user", content: researches[4]!.topic, created_at: T("2026-11-02T07:00:00Z") },
+    {
+      id: 8,
+      research_id: 5,
+      role: "assistant",
+      content: "Three countries adjusted their schemes; details are in the panel.",
+      created_at: T("2026-11-02T07:01:00Z"),
+    },
   ];
 
   const findings: StoredFinding[] = [
@@ -240,6 +307,26 @@ function fixtures(): Store {
       new_findings: 0,
     },
     {
+      id: 41,
+      research_id: FIXTURE_ACTIVE_RUN_ID,
+      started_at: T("2026-11-10T09:30:00Z"),
+      finished_at: null,
+      status: "running",
+      trigger: "chat",
+      cost_cents: 0,
+      new_findings: 0,
+    },
+    {
+      id: 51,
+      research_id: FIXTURE_CONFLICT_ID,
+      started_at: T("2026-11-10T06:00:00Z"),
+      finished_at: T("2026-11-10T06:01:00Z"),
+      status: "ok",
+      trigger: "watch",
+      cost_cents: 18,
+      new_findings: 1,
+    },
+    {
       id: 21,
       research_id: 2,
       started_at: T("2026-11-09T18:00:00Z"),
@@ -273,11 +360,174 @@ function sortDesc<T extends { id: number }>(items: T[], key: (x: T) => string): 
 export interface MockClientOptions {
   /** Source of "now" for watch_enabled_at and new rows (deterministic in tests). */
   now?: () => string;
+  /** Delay between simulated stream events, in ms (default 400; 0 in unit tests). */
+  chunkDelayMs?: number;
+  /** getResearch calls that still show a scripted run as active before it settles (default 2). */
+  activeRunPolls?: number;
 }
+
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 export function createMockClient(options: MockClientOptions = {}): ApiClient {
   const store = fixtures();
   const now = options.now ?? (() => new Date().toISOString());
+  const chunkDelayMs = options.chunkDelayMs ?? 400;
+  const activeRunPolls = options.activeRunPolls ?? 2;
+
+  const scripted: ScriptedRun[] = [
+    {
+      researchId: FIXTURE_ACTIVE_RUN_ID,
+      runId: 41,
+      pollsLeft: activeRunPolls,
+      reply:
+        "Two groups reported logical qubits below the error threshold; the details and sources are in the panel.",
+      finding: {
+        title: "Logical qubit error rates fall below the surface-code threshold",
+        url: "https://physics.example.org/news/logical-qubits-below-threshold",
+        summary: "A 49-qubit surface-code experiment kept logical errors falling as the code distance grew.",
+        source: "physics.example.org",
+      },
+    },
+  ];
+  /** Fixture B's watch run has not started yet. */
+  let conflictRunPending = true;
+
+  // React StrictMode mounts effects twice in dev, so calls in the same synchronous
+  // turn count once; otherwise the fixtures would settle a poll early.
+  const countedThisTurn = new Set<number>();
+  const countCall = (id: number): boolean => {
+    if (countedThisTurn.has(id)) return false;
+    countedThisTurn.add(id);
+    queueMicrotask(() => countedThisTurn.delete(id));
+    return true;
+  };
+
+  const runningRun = (id: number): StoredRun | undefined =>
+    store.runs.find((x) => x.research_id === id && x.status === "running");
+
+  const addFinding = (researchId: number, f: ScriptedRun["finding"]): StoredFinding => {
+    const stored: StoredFinding = {
+      ...f,
+      id: store.nextId++,
+      research_id: researchId,
+      found_at: now(),
+      dismissed: false,
+    };
+    store.findings.push(stored);
+    return stored;
+  };
+
+  const finishRun = (run: StoredRun, reply: string, newFindings: number, cost: number) => {
+    const at = now();
+    run.status = "ok";
+    run.finished_at = at;
+    run.cost_cents = cost;
+    run.new_findings = newFindings;
+    store.messages.push({ id: store.nextId++, research_id: run.research_id, role: "assistant", content: reply, created_at: at });
+    const r = store.researches.find((x) => x.id === run.research_id);
+    if (r) {
+      r.last_run_at = at;
+      r.last_activity_at = at;
+    }
+  };
+
+  const advanceScripted = (id: number) => {
+    for (const s of scripted) {
+      if (s.researchId !== id) continue;
+      const run = store.runs.find((x) => x.id === s.runId);
+      if (!run || run.status !== "running") continue;
+      if (s.pollsLeft > 0) {
+        s.pollsLeft -= 1;
+        continue;
+      }
+      addFinding(id, s.finding);
+      finishRun(run, s.reply, 1, 21);
+    }
+  };
+
+  const startConflictRun = () => {
+    if (!conflictRunPending) return;
+    conflictRunPending = false;
+    if (!store.researches.some((x) => x.id === FIXTURE_CONFLICT_ID) || runningRun(FIXTURE_CONFLICT_ID)) return;
+    const run: StoredRun = {
+      id: store.nextId++,
+      research_id: FIXTURE_CONFLICT_ID,
+      started_at: now(),
+      finished_at: null,
+      status: "running",
+      trigger: "watch",
+      cost_cents: 0,
+      new_findings: 0,
+    };
+    store.runs.push(run);
+    // Counted from the next getResearch, like Fixture A.
+    scripted.push({
+      researchId: FIXTURE_CONFLICT_ID,
+      runId: run.id,
+      pollsLeft: activeRunPolls,
+      reply: "New since the last check: one more country announced a subsidy change.",
+      finding: {
+        title: "Subsidy for air-to-water heat pumps raised to 40%",
+        url: "https://energy.example.com/heat-pump-subsidy-raised",
+        summary: "The ministry raised the grant ceiling and added an income bonus from January.",
+        source: "energy.example.com",
+      },
+    });
+  };
+
+  /** Simulates one chat run: token chunks, one saved finding, then done; the run outlives the caller. */
+  const simulateRun = async (
+    researchId: number,
+    userContent: string | null,
+    handlers: RunStreamHandlers,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const at = now();
+    const run: StoredRun = {
+      id: store.nextId++,
+      research_id: researchId,
+      started_at: at,
+      finished_at: null,
+      status: "running",
+      trigger: "chat",
+      cost_cents: 0,
+      new_findings: 0,
+    };
+    store.runs.push(run);
+    if (userContent !== null) {
+      store.messages.push({ id: store.nextId++, research_id: researchId, role: "user", content: userContent, created_at: at });
+    }
+    const r = find(researchId);
+    r.last_activity_at = at;
+
+    // A detached caller (abort) stops receiving events; the run itself keeps going (INV-11).
+    const emit = (e: RunEvent) => {
+      if (!signal?.aborted) handlers.onEvent(e);
+    };
+    handlers.onOpen?.();
+    let reply = "";
+    for (const chunk of MOCK_REPLY_CHUNKS) {
+      await wait(chunkDelayMs);
+      reply += chunk;
+      emit({ type: "token", text: chunk });
+    }
+    await wait(chunkDelayMs);
+    const n = run.id;
+    const saved = addFinding(researchId, {
+      title: `Mock finding for “${r.title}” (run ${n})`,
+      url: `https://research.example.org/mock/${researchId}/${n}`,
+      summary: "A deterministic finding saved by the simulated run, with its source link.",
+      source: "research.example.org",
+    });
+    const { id, title, url, summary: s, source, found_at } = saved;
+    emit({ type: "finding", finding: { id, title, url, summary: s, source, found_at } });
+    await wait(chunkDelayMs);
+    finishRun(run, reply, 1, 7);
+    emit({ type: "done", run_id: run.id, status: "ok", cost_cents: 7, new_findings: 1 });
+  };
 
   const find = (id: number): StoredResearch => {
     const r = store.researches.find((x) => x.id === id);
@@ -314,7 +564,9 @@ export function createMockClient(options: MockClientOptions = {}): ApiClient {
 
     async getResearch(id) {
       const r = find(id);
-      const running = store.runs.find((x) => x.research_id === id && x.status === "running");
+      const counted = countCall(id);
+      if (counted) advanceScripted(id);
+      const running = runningRun(id);
       const detail: ResearchDetail = {
         ...summary(r),
         topic: r.topic,
@@ -326,9 +578,10 @@ export function createMockClient(options: MockClientOptions = {}): ApiClient {
           .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id)
           .map(({ id: mid, role, content, created_at }) => ({ id: mid, role, content, created_at })),
         active_run: running
-          ? { id: running.id, status: "running", trigger: running.trigger, started_at: running.started_at }
+          ? { id: running.id, trigger: running.trigger, started_at: running.started_at }
           : null,
       };
+      if (id === FIXTURE_CONFLICT_ID && counted) queueMicrotask(startConflictRun);
       return detail;
     },
 
@@ -405,6 +658,28 @@ export function createMockClient(options: MockClientOptions = {}): ApiClient {
           cost_cents,
           new_findings,
         }));
+    },
+
+    async sendMessage(researchId, content, handlers, signal) {
+      find(researchId);
+      const trimmed = content.trim();
+      if (!trimmed) throw new ApiError(422, "content must not be blank");
+      if (trimmed.length > MESSAGE_MAX_CHARS) {
+        throw new ApiError(422, `content must be at most ${MESSAGE_MAX_CHARS} characters`);
+      }
+      if (runningRun(researchId)) throw new ApiError(409, RUN_IN_PROGRESS);
+      await simulateRun(researchId, trimmed, handlers, signal);
+    },
+
+    async respond(researchId, handlers, signal) {
+      find(researchId);
+      if (runningRun(researchId)) throw new ApiError(409, RUN_IN_PROGRESS);
+      const last = store.messages
+        .filter((m) => m.research_id === researchId)
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id)
+        .at(-1);
+      if (!last || last.role !== "user") throw new ApiError(409, NO_PENDING_MESSAGE);
+      await simulateRun(researchId, null, handlers, signal);
     },
   };
 }

@@ -23,11 +23,14 @@ export function ResearchPanel({
   watch,
   initialTab = "findings",
   api,
+  refreshKey = 0,
 }: {
   researchId: number;
   watch: { watch_enabled: boolean; schedule: Schedule | null };
   initialTab?: PanelTab;
   api?: ApiClient;
+  /** Bumped by the thread when a run streams a finding or settles. */
+  refreshKey?: number;
 }) {
   const [tab, setTab] = useState<PanelTab>(initialTab);
   const baseId = useId();
@@ -73,9 +76,9 @@ export function ResearchPanel({
         aria-labelledby={`${baseId}-tab-${tab}`}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        {tab === "findings" && <FindingsPanel researchId={researchId} api={api} />}
+        {tab === "findings" && <FindingsPanel researchId={researchId} api={api} refreshKey={refreshKey} />}
         {tab === "watch" && <WatchSettings researchId={researchId} initial={watch} api={api} />}
-        {tab === "runs" && <RunHistory researchId={researchId} api={api} />}
+        {tab === "runs" && <RunHistory researchId={researchId} api={api} refreshKey={refreshKey} />}
       </div>
     </div>
   );

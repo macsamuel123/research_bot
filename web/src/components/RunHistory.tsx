@@ -13,7 +13,16 @@ const BADGE: Record<RunStatus, string> = {
   error: "bg-red-900/60 text-red-300 ring-red-700",
 };
 
-export function RunHistory({ researchId, api }: { researchId: number; api?: ApiClient }) {
+export function RunHistory({
+  researchId,
+  api,
+  refreshKey = 0,
+}: {
+  researchId: number;
+  api?: ApiClient;
+  /** Bump to refetch (a run streamed or settled). */
+  refreshKey?: number;
+}) {
   const client = useMemo(() => api ?? getApiClient(), [api]);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +40,7 @@ export function RunHistory({ researchId, api }: { researchId: number; api?: ApiC
     return () => {
       cancelled = true;
     };
-  }, [client, researchId]);
+  }, [client, researchId, refreshKey]);
 
   if (error) {
     return (

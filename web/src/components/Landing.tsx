@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
 import { getApiClient } from "@/lib/api/client";
+import * as runStream from "@/lib/runStream";
 import { useResearchList } from "@/lib/useResearchList";
 
 export function Landing() {
@@ -19,8 +20,14 @@ export function Landing() {
     setBusy(true);
     setError(null);
     try {
-      const created = await getApiClient().createResearch(topic);
+      const api = getApiClient();
+      const created = await api.createResearch(topic);
       addItem(created);
+      // The first turn: answer the pending topic message. This is the only place the UI
+      // calls respond; the stream lives in the run-stream store and survives navigation.
+      runStream.start(created.id, (handlers) => api.respond(created.id, handlers)).catch(() => {
+        // Not started (e.g. 409): the thread shows the pending message and the owner can resend.
+      });
       router.push(`/r/${created.id}`);
     } catch {
       setError("Could not start the research");

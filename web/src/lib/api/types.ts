@@ -27,9 +27,9 @@ export interface Message {
   created_at: string;
 }
 
+/** Exactly the keys of `active_run` in GET /api/researches/{id} (M9-C5). */
 export interface ActiveRun {
   id: number;
-  status: "running";
   trigger: RunTrigger;
   started_at: string;
 }
@@ -61,6 +61,26 @@ export interface Run {
   /** Integer cents (INV-1). */
   cost_cents: number;
   new_findings: number;
+}
+
+/** One SSE event from POST /messages or /respond. */
+export type RunEvent =
+  | { type: "token"; text: string }
+  | { type: "finding"; finding: Finding }
+  | {
+      type: "done";
+      run_id: number;
+      status: Exclude<RunStatus, "running">;
+      /** Integer cents (INV-1). */
+      cost_cents: number;
+      new_findings: number;
+    }
+  | { type: "error"; message: string };
+
+export interface RunStreamHandlers {
+  /** Called once the server accepted the request (2xx), before any event. */
+  onOpen?(): void;
+  onEvent(event: RunEvent): void;
 }
 
 export interface WatchPatch {

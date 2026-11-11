@@ -5,7 +5,16 @@ import { useEffect, useMemo, useState } from "react";
 import { getApiClient, type ApiClient } from "@/lib/api/client";
 import type { Finding } from "@/lib/api/types";
 
-export function FindingsPanel({ researchId, api }: { researchId: number; api?: ApiClient }) {
+export function FindingsPanel({
+  researchId,
+  api,
+  refreshKey = 0,
+}: {
+  researchId: number;
+  api?: ApiClient;
+  /** Bump to refetch (a run streamed or settled). */
+  refreshKey?: number;
+}) {
   const client = useMemo(() => api ?? getApiClient(), [api]);
   const [findings, setFindings] = useState<Finding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +32,7 @@ export function FindingsPanel({ researchId, api }: { researchId: number; api?: A
     return () => {
       cancelled = true;
     };
-  }, [client, researchId]);
+  }, [client, researchId, refreshKey]);
 
   const dismiss = async (finding: Finding) => {
     const before = findings;
