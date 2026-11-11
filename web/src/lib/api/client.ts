@@ -5,6 +5,7 @@ import type {
   ResearchDetail,
   ResearchSummary,
   Run,
+  RunStreamHandlers,
   WatchPatch,
 } from "./types";
 
@@ -27,6 +28,21 @@ export interface ApiClient {
   dismissFinding(findingId: number): Promise<void>;
   /** Run history, newest first. */
   listRuns(researchId: number): Promise<Run[]>;
+  /**
+   * POST /api/researches/{id}/messages {content}, streamed (SSE). Settles when the stream ends.
+   * Rejects with ApiError (409 run in progress, 422, 404) before `onOpen` on a non-2xx response.
+   */
+  sendMessage(
+    researchId: number,
+    content: string,
+    handlers: RunStreamHandlers,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  /**
+   * POST /api/researches/{id}/respond: answers the pending last user message, streamed (SSE).
+   * Rejects with ApiError 409 if a run is active or the last message is not from the user.
+   */
+  respond(researchId: number, handlers: RunStreamHandlers, signal?: AbortSignal): Promise<void>;
 }
 
 export function usingMocks(): boolean {

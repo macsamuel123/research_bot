@@ -5,8 +5,10 @@ import {
   type ResearchDetail,
   type ResearchSummary,
   type Run,
+  type RunStreamHandlers,
   type WatchPatch,
 } from "./types";
+import { readRunEvents } from "./sse";
 
 async function errorFrom(response: Response): Promise<ApiError> {
   let detail = response.statusText || "Request failed";
@@ -36,6 +38,29 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** POSTs and pipes the SSE body to the handlers; non-2xx rejects before `onOpen`. */
+async function stream(
+  path: string,
+  body: unknown,
+  handlers: RunStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "text/event-stream",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
+  });
+  if (!response.ok) throw await errorFrom(response);
+  handlers.onOpen?.();
+  if (!response.body) return;
+  await readRunEvents(response.body, (e) => handlers.onEvent(e));
+}
+
 /** Same-origin client; the Next rewrite proxies /api to FastAPI. */
 export function createHttpClient(): ApiClient {
   return {
@@ -59,5 +84,9 @@ export function createHttpClient(): ApiClient {
       await request(`/api/findings/${findingId}/dismiss`, { method: "POST" });
     },
     listRuns: (researchId) => json<Run[]>(`/api/researches/${researchId}/runs`),
+    sendMessage: (researchId, content, handlers, signal) =>
+      stream(`/api/researches/${researchId}/messages`, { content }, handlers, signal),
+    respond: (researchId, handlers, signal) =>
+      stream(`/api/researches/${researchId}/respond`, undefined, handlers, signal),
   };
 }
