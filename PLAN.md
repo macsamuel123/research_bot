@@ -387,3 +387,29 @@ Assumed answers to the BRD open questions and other decisions (the owner may ove
 - One run at a time per research. A chat send during any active run returns 409, and a watch that comes due during a chat run waits for the next tick.
 - `ANTHROPIC_MODEL` is required, with no code default. `.env.example` carries `claude-sonnet-5-5` as a placeholder. That is the Sonnet-class ID in Anthropic's published model list as of 2026-11, and the owner must confirm it against the current list before deploying. The `PRICE_*` defaults are also placeholders that must be checked against current Anthropic and Tavily pricing.
 - `PUBLIC_BASE_URL` must be https in production. The recommended setup is a Tailscale MagicDNS hostname served via `tailscale serve`. A bare `http://100.x.y.z` URL may be rejected by Telegram as a button URL and would break the `Secure` cookie.
+
+## M16: Langfuse tracing and /cost command
+ui: false
+Add one tracing wrapper around the LLM and search clients, with project and feature tags, and a Telegram `/cost` command that reports spend from the `run` table. This milestone does not build a global spend cap, a web cost screen, or a `/cost` API endpoint. The existing per-run caps stay as they are.
+
+- [ ] M16-C1: `integrations/traced.py` adds `TracedLLM` and `TracedSearch`, which wrap the `LLMClient` and `SearchClient` protocols. They report to a `Tracer` protocol (`LangfuseTracer`, plus a `FakeTracer` that records in memory), and `integrations/factory.py` applies them in both real and fake mode.
+  - Calls from one run are grouped under one trace keyed by `run_id`, tagged `project=research_bot` and `feature=<trigger>`. The digest synthesis call uses `feature=digest_synthesis`.
+  - Each LLM call is recorded as a generation (model, input and output tokens, `cost_cents` from `engine.cost.compute()`). Each search call is recorded as a span (query, result count).
+  - A pytest test parametrized over `chat|watch|telegram|api|digest` runs `run_turn` with `FakeTracer` and asserts the tags, one trace per run and the expected call counts. Calls that `RunBudget` blocks are not traced.
+- [ ] M16-C2: Tracing can never affect a run, and `RunBudget` stays the only caller.
+  - **Tracer failures:** a `Tracer` that raises on every method still leaves the run finishing `ok` with the same findings and `cost_cents`. The failure is logged without any key.
+  - **Provider errors:** an error raised by the wrapped LLM or search client propagates unchanged and is recorded on the trace as an error.
+  - **Single call path:** a static test fails if any module outside `app/integrations/` imports `AnthropicLLM` or `TavilySearch`, or builds a client other than through the factory.
+  - **Real tracer:** `LangfuseTracer` is tested with the Langfuse client stubbed, and no test opens a non-localhost socket (INV-8).
+- [ ] M16-C3: Config and deployment carry the Langfuse settings.
+  - `Settings` gets required `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`, plus a defaulted `LANGFUSE_HOST`. Startup fails if either key is missing, like the other required keys.
+  - `.env.example` lists all three, and `test_env_example` still passes.
+  - `compose.yaml` passes the `LANGFUSE_*` variables to `api` and `bot`, and the compose tests still pass.
+  - `SecretRedactingFilter` redacts both Langfuse keys (a caplog test).
+- [ ] M16-C4: `CLAUDE.md` has a `## Required keys` section with exactly these lines: `- ANTHROPIC_API_KEY — <purpose>`, `- TAVILY_API_KEY — <purpose>`, `- TELEGRAM_BOT_TOKEN — <purpose>`, `- LANGFUSE_PUBLIC_KEY — <purpose>` and `- LANGFUSE_SECRET_KEY — <purpose>`. A test parses the file for these lines, checks that each name is a `Settings` field, and checks that each name is in `.env.example`.
+- [ ] M16-C5: `services/cost.py` has `summary(now)` and uses the injected `Clock`.
+  - It sums `run.cost_cents` as ints for today (since 00:00 UTC) and for the last 7 days.
+  - It lists the top 5 researches by spend over those 7 days, with title and cents.
+  - It reports the per-run caps (`RUN_BUDGET_CENTS`, `RUN_MAX_SEARCH_CALLS`) from the same `Settings` values `RunBudget` uses, and the number of `capped` runs in the window.
+  - Tests with seeded runs, including boundaries at midnight and exactly 7 days ago, check the totals and ordering. The money formatting uses only integer math (`divmod`) and no float, Decimal or `/` (0→"$0.00", 5→"$0.05", 1234→"$12.34").
+- [ ] M16-C6: The bot handles `/cost` from `OWNER_CHAT_ID` with one HTML message showing today, last 7 days, the by-research list (titles HTML-escaped) and the caps line. A message from any other chat ID causes no DB reads or writes and no bot API calls (the M12-C2 pattern, with an empty FakeTelegram outbox). The command is registered in the bot's handlers, and `/cost` does not create a research.
